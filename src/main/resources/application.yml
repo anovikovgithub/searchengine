@@ -1,0 +1,25 @@
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/search_engine?useSSL=false&useUnicode=true&serverTimezone=UTC
+    username: search_engine_user
+    password: testtest
+  jpa:
+    hibernate:
+      dialect: org.hibernate.dialect.MySQL8Dialect
+      ddl-auto: update
+      show-sql: true
+
+indexing-settings:
+  sites:
+    - url: https://www.lenta.ru
+      name: Лента.ру
+    - url: https://www.skillbox.ru
+      name: Skillbox
+    - url: https://www.playback.ru
+      name: PlayBack.Ru
+    - url: https://idealtrip.ru
+      name: IdealTrip.Ru
+    - url: https://www.svetlovka.ru
+      name: Svetlovka.ru
+server:
+  port: 8080
