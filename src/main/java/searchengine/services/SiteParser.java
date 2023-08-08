@@ -63,10 +63,6 @@ public class SiteParser extends RecursiveAction {
 
     private boolean isLinkExists(String link) {
         Optional<Page> list = pageRepository.findByPath(link);
-<<<<<<< HEAD
-=======
-        String expr = list.isEmpty()? " not exists" : " exists";
->>>>>>> origin/main
         return list.isEmpty()? false : true;
     }
 
