@@ -74,11 +74,7 @@ public class SiteParser extends RecursiveAction {
             String path = url.getPath();
             return (path != null) &&
                     !indexingCanceled &&
-<<<<<<< HEAD
 //                    !path.contains(".") &&
-=======
-                    !path.contains(".") &&
->>>>>>> origin/main
                     !link.contains("#") &&
                     url.getHost().equalsIgnoreCase(siteUrl.getHost()) &&
                     link.contains(site.getUrl()) &&
@@ -130,10 +126,6 @@ public class SiteParser extends RecursiveAction {
                         absLink = absLink.replaceFirst(".$", "");
                     }
                     if (checkLink(absLink)) {
-<<<<<<< HEAD
-=======
-                        System.out.println(absLink);
->>>>>>> origin/main
                         if (!indexingCanceled) {
                             readWriteLinksLock.lock();
                             try {
