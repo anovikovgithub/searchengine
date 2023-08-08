@@ -1,11 +1,18 @@
 package searchengine.services;
 
 import lombok.RequiredArgsConstructor;
+import org.jsoup.Connection;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import searchengine.config.SitesList;
 import searchengine.model.*;
+import searchengine.repository.IndexRepository;
+import searchengine.repository.LemmaRepository;
+import searchengine.repository.PageRepository;
+import searchengine.repository.SiteRepository;
+import searchengine.utils.SiteParser;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.time.LocalDateTime;
@@ -115,12 +122,20 @@ public class IndexingServiceImpl implements IndexingService {
 
     private Site createNewSite(searchengine.config.Site site) {
         Site mSite = new Site();
-        mSite.setName(site.getName());
-        mSite.setStatus(SiteStatus.INDEXING);
-        mSite.setStatusTime(LocalDateTime.now(ZoneId.of("Europe/Moscow")));
-        mSite.setUrl(site.getUrl());
-        Site savedSite = siteRepository.save(mSite);
-        return savedSite;
+        try {
+            Connection.Response response = SiteParser.getResponse(site.getUrl());
+            String url = response.url().toString();
+            mSite.setName(site.getName());
+            mSite.setStatus(SiteStatus.INDEXING);
+            mSite.setStatusTime(LocalDateTime.now(ZoneId.of("Europe/Moscow")));
+            mSite.setUrl(url);
+            Site savedSite = siteRepository.save(mSite);
+            return savedSite;
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private void startIndexing(String url) {
@@ -165,17 +180,25 @@ public class IndexingServiceImpl implements IndexingService {
     }
 
     private void deleteSiteEntries(String url) {
-        Iterable<Site> sites = siteRepository.findByUrl(url);
-        Iterator<Site> iterator = sites.iterator();
-        while (iterator.hasNext()) {
-            Site site = iterator.next();
-            Optional<List<Page>> pages = pageRepository.findBySite(site);
-            if (pages.isPresent()) {
-                indexRepository.deleteIndexByPageIn(pages);
+        try {
+            Connection.Response response = SiteParser.getResponse(url);
+            url = response.url().toString();
+            Iterable<Site> sites = siteRepository.findByUrl(url);
+            Iterator<Site> iterator = sites.iterator();
+            while (iterator.hasNext()) {
+                Site site = iterator.next();
+                Optional<List<Page>> pages = pageRepository.findBySite(site);
+                if (pages.isPresent()) {
+                    indexRepository.deleteIndexByPageIn(pages);
+                }
+                lemmaRepository.deleteBySite(site);
+                pageRepository.deleteBySite(site);
+                siteRepository.delete(site);
             }
-            lemmaRepository.deleteBySite(site);
-            pageRepository.deleteBySite(site);
-            siteRepository.delete(site);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
         }
     }
 }

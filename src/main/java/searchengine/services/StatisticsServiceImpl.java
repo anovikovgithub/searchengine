@@ -13,8 +13,12 @@ import searchengine.dto.statistics.StatisticsResponse;
 import searchengine.dto.statistics.TotalStatistics;
 import searchengine.exceptions.NothingFoundException;
 import searchengine.model.*;
+import searchengine.repository.IndexRepository;
+import searchengine.repository.LemmaRepository;
+import searchengine.repository.PageRepository;
+import searchengine.repository.SiteRepository;
+import searchengine.utils.LemmaFinder;
 
-import java.io.IOException;
 import java.math.BigInteger;
 import java.net.URI;
 import java.time.LocalDateTime;
@@ -73,81 +77,29 @@ public class StatisticsServiceImpl implements StatisticsService {
         return response;
     }
 
-//    @PersistenceContext
-//    private EntityManager entityManager;
-
     @Override
     public HashMap<String, Object> search(String query, String searchSite, Integer offset, Integer limit) {
         HashMap<String, Object> response = new HashMap<>();
         try {
             LemmaFinder lemmaFinder = LemmaFinder.getInstance();
-            Site site = null;
-            Long siteId = null;
-            if (!((searchSite == null) || (searchSite.equals("")))) {
-                Iterable<Site> siteIterable = siteRepository.findByUrl(searchSite);
-                Iterator<Site> siteIterator = siteIterable.iterator();
-                if (siteIterator.hasNext()) {
-                    site = siteIterator.next();
-                    siteId = site.getId();
-                } else {
-                    throw new RuntimeException("указанный сайт не проиндексирован");
-                }
-            }
-            final Long finalSiteId = siteId;
+            //Site site = null;
+            final Long finalSiteId = getSiteIdIfExists(searchSite);
             //найти уникальные леммы в поисковом запросе
             Map<String, Integer> lemmasFromDB = lemmaFinder.collectLemmas(query);
-
             //исключить леммы, которые встречаются более чем на 100 страницах (для примера)
-            List<String> lemmasToExclude = new ArrayList<>();
-            lemmasFromDB.forEach((lemma, count) -> {
-                Optional<Integer> pagesCnt = lemmaRepository.getPageCountByLemma(lemma, finalSiteId);
-                if ((pagesCnt.isPresent()) && (pagesCnt.get() > 100)) {
-                    lemmasToExclude.add(lemma);
-                }
-            });
-            lemmasToExclude.forEach(lemma -> lemmasFromDB.remove(lemma));
-            if (lemmasFromDB.isEmpty()) {
-                throw new NothingFoundException("Не найдено совпадений по поисковому запросу");
-            }
-            //количество встречающихся лемм в проиндексированных сайтах
-            lemmasFromDB.forEach((lemma, count) -> {
-                Integer lemmaCnt = lemmaRepository.getLemmaCounts(lemma, finalSiteId);
-                if (lemmaCnt == null) lemmaCnt = 0;
-                lemmasFromDB.put(lemma, lemmaCnt);
-            });
+            excludeFrequencyOccuredLemmas(finalSiteId, lemmasFromDB);
+
             //отсортируем в порядке возрастания frequency
-            Map<String, Integer> lemmasSortedByVal =
-                    lemmasFromDB.entrySet().stream()
-                            .sorted(Map.Entry.comparingByValue())
-                            .collect(Collectors.toMap(
-                                    Map.Entry::getKey, Map.Entry::getValue, (e1, e2) -> e1, LinkedHashMap::new));
+            Map<String, Integer> lemmasSortedByVal = lemmasFromDB.entrySet().stream().sorted(Map.Entry.comparingByValue())
+              .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (e1, e2) -> e1, LinkedHashMap::new));
             Iterable<BigInteger> lemmaIds;
             Iterable<BigInteger> pagesIds = null;
             List<BigInteger> pagesIdsList = new ArrayList<>();
             List<BigInteger> lemmaIdsList = new ArrayList<>();
             try {
-                for (Map.Entry<String, Integer> entry : lemmasSortedByVal.entrySet()) {
-                    if (entry.getValue() == 0) {
-                        throw new NothingFoundException("Не найдено совпадений по поисковому запросу");
-                    } else {
-                        lemmaIds = (finalSiteId == null)
-                                ? lemmaRepository.getLemmaIdsByName(entry.getKey())
-                                : lemmaRepository.getLemmaIdsByNameAndSite(entry.getKey(), finalSiteId);
-                        lemmaIds.forEach(lemmaIdsList::add);
-                        if (pagesIds == null) {
-                            pagesIds = indexRepository.getPagesByLemmaIds(lemmaIdsList);
-                        } else {
-                            pagesIds.forEach(pagesIdsList::add);
-                            pagesIds = indexRepository.getPagesByLemmaAndPageIds(lemmaIdsList, pagesIdsList);
-                        }
-                        if (!pagesIds.iterator().hasNext()) {
-                            throw new NothingFoundException("Не найдено совпадений по поисковому запросу");
-                        }
-                    }
-                }
+                pagesIds = calculatePagesIds(finalSiteId, lemmasSortedByVal, pagesIds, pagesIdsList, lemmaIdsList);
             } catch (Exception e) {
-                response.put("result", false);
-                response.put("error", e.getMessage());
+                makeErrorResponse(response, e);
                 return response;
             }
             pagesIdsList.clear();
@@ -155,17 +107,9 @@ public class StatisticsServiceImpl implements StatisticsService {
             Iterable<Page> pageIterable = pageRepository.getPagesByIds(pagesIdsList);
             Iterable<Object[]> pagesRank = pageRepository.getPagesRank(pagesIdsList, lemmaIdsList);
             HashMap<BigInteger, Double> pagesRankMap = new HashMap<>();
-            Iterator<Object[]> pagesRankIteraror = pagesRank.iterator();
-            if (pagesRankIteraror.hasNext()) {
-                while (pagesRankIteraror.hasNext()) {
-                    Object[] pageRank = pagesRankIteraror.next();
-                    pagesRankMap.put((BigInteger) pageRank[0], (Double) pageRank[1]);
-                }
-            }
-            Optional<Object> maxRankOptional = pageRepository.getMaxRank(pagesIdsList, lemmaIdsList);
-            Double maxRelevance = (Double) maxRankOptional.get();
-            int cnt = 0;
+            Double maxRelevance = getMaxRelevance(pagesIdsList, lemmaIdsList, pagesRank, pagesRankMap);
             Iterator<Page> pageIterator = pageIterable.iterator();
+            int cnt = 0;
             int offset_ = offset;
             if (offset_ > 0) {
                 offset++;
@@ -177,47 +121,129 @@ public class StatisticsServiceImpl implements StatisticsService {
                     }
                 }
             }
-            if (!pageIterator.hasNext()) {
-                response.put("result", false);
-                response.put("error", "Задан пустой поисковый запрос");
-            } else {
-                ArrayList<HashMap<String, ?>> details = new ArrayList<>();
-                response.put("result", true);
-                while (pageIterator.hasNext()) {
-                    cnt++;
-                    Page page = pageIterator.next();
-                    if ((limit > 0) && (cnt > limit + offset )) {
-                        continue;
-                    }
-                    Site s = page.getSite();
-                    HashMap<String, Object> item = new HashMap<>();
-                    item.put("site", s.getUrl());
-                    item.put("siteName", s.getName());
-                    URI uri = URI.create(page.getPath());
-                    item.put("uri", uri.getPath());
-                    Document doc = Jsoup.parse(page.getContent());
-                    //item.put("title", doc.title());
-                    item.put("title", page.getPath());
-                    String fragment = getDocumentFragment(doc, query);
-                    item.put("snippet", fragment);
-                    Double relevance = 0.0D;
-                    BigInteger pageId = BigInteger.valueOf(page.getId());
-                    Double absoluteRelevance = pagesRankMap.get(pageId);
-                    if (absoluteRelevance != null) {
-                        relevance = absoluteRelevance / maxRelevance;
-                    }
-                    item.put("relevance", relevance);
-                    details.add(item);
-                    response.put("data", details);
-                }
-            }
-            response.put("count", cnt);
+            makeOKResponse(query, offset, limit, response, pagesRankMap, maxRelevance, cnt, pageIterator);
             return response;
         } catch (Exception e) {
-            response.put("result", false);
-            response.put("error", e.getMessage());
+            makeErrorResponse(response, e);
             return response;
         }
+    }
+
+    private Iterable<BigInteger> calculatePagesIds(Long finalSiteId, Map<String, Integer> lemmasSortedByVal, Iterable<BigInteger> pagesIds, List<BigInteger> pagesIdsList, List<BigInteger> lemmaIdsList) throws NothingFoundException {
+        Iterable<BigInteger> lemmaIds;
+        for (Map.Entry<String, Integer> entry : lemmasSortedByVal.entrySet()) {
+            if (entry.getValue() == 0) {
+                throw new NothingFoundException("Не найдено совпадений по поисковому запросу");
+            } else {
+                lemmaIds = (finalSiteId == null)
+                        ? lemmaRepository.getLemmaIdsByName(entry.getKey())
+                        : lemmaRepository.getLemmaIdsByNameAndSite(entry.getKey(), finalSiteId);
+                lemmaIds.forEach(lemmaIdsList::add);
+                if (pagesIds == null) {
+                    pagesIds = indexRepository.getPagesByLemmaIds(lemmaIdsList);
+                } else {
+                    pagesIds.forEach(pagesIdsList::add);
+                    pagesIds = indexRepository.getPagesByLemmaAndPageIds(lemmaIdsList, pagesIdsList);
+                }
+                if (!pagesIds.iterator().hasNext()) {
+                    throw new NothingFoundException("Не найдено совпадений по поисковому запросу");
+                }
+            }
+        }
+        return pagesIds;
+    }
+
+    private Double getMaxRelevance(List<BigInteger> pagesIdsList, List<BigInteger> lemmaIdsList, Iterable<Object[]> pagesRank, HashMap<BigInteger, Double> pagesRankMap) {
+        Iterator<Object[]> pagesRankIteraror = pagesRank.iterator();
+        if (pagesRankIteraror.hasNext()) {
+            while (pagesRankIteraror.hasNext()) {
+                Object[] pageRank = pagesRankIteraror.next();
+                pagesRankMap.put((BigInteger) pageRank[0], (Double) pageRank[1]);
+            }
+        }
+        Optional<Object> maxRankOptional = pageRepository.getMaxRank(pagesIdsList, lemmaIdsList);
+        Double maxRelevance = (Double) maxRankOptional.get();
+        return maxRelevance;
+    }
+
+    private static void makeErrorResponse(HashMap<String, Object> response, Exception e) {
+        response.put("result", false);
+        response.put("error", e.getMessage());
+    }
+
+    private void excludeFrequencyOccuredLemmas(Long finalSiteId, Map<String, Integer> lemmasFromDB) throws NothingFoundException {
+        List<String> lemmasToExclude = new ArrayList<>();
+        lemmasFromDB.forEach((lemma, count) -> {
+            Optional<Integer> pagesCnt = lemmaRepository.getPageCountByLemma(lemma, finalSiteId);
+            if ((pagesCnt.isPresent()) && (pagesCnt.get() > 100)) {
+                lemmasToExclude.add(lemma);
+            }
+        });
+        lemmasToExclude.forEach(lemma -> lemmasFromDB.remove(lemma));
+        if (lemmasFromDB.isEmpty()) {
+            throw new NothingFoundException("Не найдено совпадений по поисковому запросу");
+        }
+        //количество встречающихся лемм в проиндексированных сайтах
+        lemmasFromDB.forEach((lemma, count) -> {
+            Integer lemmaCnt = lemmaRepository.getLemmaCounts(lemma, finalSiteId);
+            if (lemmaCnt == null) lemmaCnt = 0;
+            lemmasFromDB.put(lemma, lemmaCnt);
+        });
+    }
+
+    private Long getSiteIdIfExists(String searchSite) {
+        Site site;
+        Long siteId = null;
+        if (!((searchSite == null) || (searchSite.equals("")))) {
+            Iterable<Site> siteIterable = siteRepository.findByUrl(searchSite);
+            Iterator<Site> siteIterator = siteIterable.iterator();
+            if (siteIterator.hasNext()) {
+                site = siteIterator.next();
+                siteId = site.getId();
+            } else {
+                throw new RuntimeException("указанный сайт не проиндексирован");
+            }
+        }
+        final Long finalSiteId = siteId;
+        return finalSiteId;
+    }
+
+    private void makeOKResponse(String query, Integer offset, Integer limit, HashMap<String, Object> response, HashMap<BigInteger, Double> pagesRankMap, Double maxRelevance, int cnt, Iterator<Page> pageIterator) {
+        if (!pageIterator.hasNext()) {
+            response.put("result", false);
+            response.put("error", "Задан пустой поисковый запрос");
+        } else {
+            ArrayList<HashMap<String, ?>> details = new ArrayList<>();
+            response.put("result", true);
+            while (pageIterator.hasNext()) {
+                cnt++;
+                Page page = pageIterator.next();
+                if ((limit > 0) && (cnt > limit + offset)) {
+                    continue;
+                }
+                Site s = page.getSite();
+                HashMap<String, Object> item = new HashMap<>();
+                item.put("site", s.getUrl());
+                item.put("siteName", s.getName());
+                URI uri = URI.create(page.getPath());
+                item.put("uri", uri.getPath());
+                Document doc = Jsoup.parse(page.getContent());
+                //item.put("title", doc.title());
+                item.put("title", page.getPath());
+                String fragment = getDocumentFragment(doc, query);
+                item.put("snippet", fragment);
+                Double relevance = 0.0D;
+                BigInteger pageId = BigInteger.valueOf(page.getId());
+                Double absoluteRelevance = pagesRankMap.get(pageId);
+                if (absoluteRelevance != null) {
+                    relevance = absoluteRelevance / maxRelevance;
+                }
+                item.put("relevance", relevance);
+                details.add(item);
+                response.put("data", details);
+            }
+        }
+        response.put("count", cnt);
     }
 
     private String insertBoldTagByText(String result, String text, int maxLength) {

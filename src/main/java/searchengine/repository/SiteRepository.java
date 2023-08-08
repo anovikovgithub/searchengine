@@ -1,8 +1,9 @@
-package searchengine.model;
+package searchengine.repository;
 
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.CrudRepository;
 import org.springframework.stereotype.Repository;
+import searchengine.model.Site;
 
 import java.math.BigInteger;
 import java.util.List;
