@@ -196,8 +196,12 @@ public class StatisticsServiceImpl implements StatisticsService {
                     URI uri = URI.create(page.getPath());
                     item.put("uri", uri.getPath());
                     Document doc = Jsoup.parse(page.getContent());
+<<<<<<< HEAD
                     //item.put("title", doc.title());
                     item.put("title", page.getPath());
+=======
+                    item.put("title", doc.title());
+>>>>>>> origin/main
                     String fragment = getDocumentFragment(doc, query);
                     item.put("snippet", fragment);
                     Double relevance = 0.0D;
